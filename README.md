@@ -1,2 +1,2 @@
 # semaphoreSmokers
-2o projete de Sistemas Operativos 
+2o projeto de Sistemas Operativos - semáforos e memória partilhada
