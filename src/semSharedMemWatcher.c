@@ -140,6 +140,11 @@ static bool waitForIngredient(int id)
     }
 
     /* TODO: insert your code here */
+    //updates state to WAITING_ING and saves
+    sh->fSt.st.smokerStat[id] = WAITING_ING;
+    saveState(nFic,&sh->fSt);
+
+
 
     if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
         perror ("error on the down operation for semaphore access (WT)");
@@ -148,12 +153,26 @@ static bool waitForIngredient(int id)
 
     /* TODO: insert your code here */
 
+    //waits notification from agent
+    if (semDown (semgid, sh->ingredient[id]) == -1)  {                                                     
+        perror ("error on the up operation for semaphore access (WT)");
+        exit (EXIT_FAILURE);
+    }
+
+
     if (semDown (semgid, sh->mutex) == -1)  {                                                     /* enter critical region */
         perror ("error on the up operation for semaphore access (WT)");
         exit (EXIT_FAILURE);
     }
 
     /* TODO: insert your code here */
+    //check if factory is closed and change to closign_w
+    if (sh->fSt.closing){
+        sh->fSt.st.watcherStat[id] = CLOSING_W;
+        saveState(nFic,&sh->fSt);
+        ret = false;    
+    }
+
 
     if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
         perror ("error on the down operation for semaphore access (WT)");
@@ -219,4 +238,3 @@ static void informSmoker (int id, int smokerReady)
 
     /* TODO: insert your code here */
 }
-
