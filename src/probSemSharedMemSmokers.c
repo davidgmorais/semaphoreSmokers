@@ -1,15 +1,15 @@
 /**
- *  \file probSemSharedMemSmokers.c (implementation file)
+ *  \file semSharedMemSmoker.c (implementation file)
  *
  *  \brief Problem name: Smokers
  *
  *  Synchronization based on semaphores and shared memory.
  *  Implementation with SVIPC.
  *
- *  Generator process of the intervening entities.
- *
- *  Upon execution, one parameter is requested:
- *    \li name of the logging file.
+ *  Definition of the operations carried out by the smokers:
+ *     \li waitForIngredients
+ *     \li rollingCigarette
+ *     \li smoke
  *
  *  \author Nuno Lau - December 2019
  */
@@ -18,9 +18,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <sys/types.h>
-#include <sys/ipc.h>
 #include <string.h>
 #include <math.h>
 
@@ -31,185 +29,276 @@
 #include "semaphore.h"
 #include "sharedMemory.h"
 
-/** \brief name of agent program */
-#define   AGENT               "./agent"
+/** \brief logging file name */
+static char nFic[51];
 
-/** \brief name of watcher program */
-#define   WATCHER             "./watcher"
+/** \brief shared memory block access identifier */
+static int shmid;
 
-/** \brief name of smoker program */
-#define   SMOKER              "./smoker"
+/** \brief semaphore set access identifier */
+static int semgid;
+
+/** \brief pointer to shared memory region */
+static SHARED_DATA *sh;
+
+static bool waitForIngredients (int id);
+static void rollingCigarette (int id);
+static void smoke (int id);
 
 
 /**
  *  \brief Main program.
  *
- *  Its role is starting the simulation by generating the intervening entities processes (agent, watcher and smokers)
- *  and waiting for their termination.
+ *  Its role is to generate the life cycle of one of intervening entities in the problem: the smoker.
  */
 int main (int argc, char *argv[])
 {
-    char nFic[51];                                                                              /*name of logging file */
-    char nFicErr[] = "error_        ";                                                     /* base name of error files */
-    int shmid,                                                                      /* shared memory access identifier */
-        semgid;                                                                     /* semaphore set access identifier */
-    unsigned int  m;                                                                             /* counting variables */
-    SHARED_DATA *sh;                                                                /* pointer to shared memory region */
-    int pidAG,                                                                             /* agent process identifier */
-        pidWT[NUMINGREDIENTS],                                                    /* watchers process identifier array */
-        pidSM[NUMSMOKERS];                                                         /* smokers process identifier array */
-    int key;                                                           /*access key to shared memory and semaphore set */
-    char num[2][12];                                                     /* numeric value conversion (up to 10 digits) */
-    int status,                                                                                    /* execution status */
-        info;                                                                                               /* info id */
+    int key;                                         /*access key to shared memory and semaphore set */
+    char *tinp;                                                    /* numerical parameters test flag */
+    int n;
 
-    /* getting log file name */
-    if(argc==2) {
-        strcpy(nFic, argv[1]);
+    /* validation of command line parameters */
+    if (argc != 5) { 
+        freopen ("error_SM", "a", stderr);
+        fprintf (stderr, "Number of parameters is incorrect!\n");
+        return EXIT_FAILURE;
     }
-    else strcpy(nFic, "");
-
-    /* composing command line */
-    if ((key = ftok (".", 'a')) == -1) {
-        perror ("error on generating the key");
-        exit (EXIT_FAILURE);
+    else {
+       freopen (argv[4], "w", stderr);
+       setbuf(stderr,NULL);
     }
-    sprintf (num[1], "%d", key);
 
-    /* creating and initializing the shared memory region and the log file */
-    if ((shmid = shmemCreate (key, sizeof (SHARED_DATA))) == -1) { 
-        perror ("error on creating the shared memory region");
-        exit (EXIT_FAILURE);
+    n = (unsigned int) strtol (argv[1], &tinp, 0);
+    if ((*tinp != '\0') || (n >= NUMSMOKERS )) { 
+        fprintf (stderr, "Smoker process identification is wrong!\n");
+        return EXIT_FAILURE;
+    }
+    strcpy (nFic, argv[2]);
+    key = (unsigned int) strtol (argv[3], &tinp, 0);
+    if (*tinp != '\0') { 
+        fprintf (stderr, "Error on the access key communication!\n");
+        return EXIT_FAILURE;
+    }
+
+    /* connection to the semaphore set and the shared memory region and mapping the shared region onto the
+       process address space */
+    if ((semgid = semConnect (key)) == -1) { 
+        perror ("error on connecting to the semaphore set");
+        return EXIT_FAILURE;
+    }
+    if ((shmid = shmemConnect (key)) == -1) { 
+        perror ("error on connecting to the shared memory region");
+        return EXIT_FAILURE;
     }
     if (shmemAttach (shmid, (void **) &sh) == -1) { 
         perror ("error on mapping the shared region on the process address space");
-        exit (EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
 
     /* initialize random generator */
-    srandom ((unsigned int) getpid ());                                
+    srandom ((unsigned int) getpid ());                                                 
 
-    /* initialize problem internal status */
-    sh->fSt.st.agentStat        = PREPARING;                            /* the agent prepares ingredients */
-    int w;
-    for (w = 0; w < NUMINGREDIENTS; w++) {
-        sh->fSt.st.watcherStat[w] = WAITING_ING;                              /* watchers are initialized */
-        sh->fSt.ingredients[w]=0;
-    }
-    int s;
-    for (s = 0; s < NUMSMOKERS; s++) {
-        sh->fSt.st.smokerStat[s] = WAITING_2ING;                               /* smokers are initialized */
-        sh->fSt.nCigarettes[s]=0;
+
+    /* simulation of the life cycle of the smoker */
+    while(waitForIngredients(n)) {
+        rollingCigarette(n);
+        smoke(n);
     }
 
-    sh->fSt.nIngredients = NUMINGREDIENTS;
-    sh->fSt.nSmokers     = NUMSMOKERS;
-
-    sh->fSt.nOrders      = NUMORDERS;
-
-
-    /* create log file */
-    createLog (nFic, &sh->fSt);                                  
-    saveState(nFic,&sh->fSt);
-
-    /* initialize semaphore ids */
-    sh->mutex                       = MUTEX;                                /* mutual exclusion semaphore id */
-    sh->waitCigarette               = WAITCIGARETTE;                         
- 
-    int i;
-    for(i=0;i<NUMINGREDIENTS;i++) {
-       sh->ingredient[i]            = INGREDIENT+i;                                                      
-    }
-    for(s=0;s<NUMSMOKERS;s++) {
-       sh->wait2Ings[s]             = WAIT2INGS+s;                                                      
-    }
-
-    /* creating and initializing the semaphore set */
-    if ((semgid = semCreate (key, SEM_NU)) == -1) { 
-        perror ("error on creating the semaphore set");
-        exit (EXIT_FAILURE);
-    }
-    if (semUp (semgid, sh->mutex) == -1) {                   /* enabling access to critical region */
-        perror ("error on executing the up operation for semaphore access");
-        exit (EXIT_FAILURE);
-    }
-
-    /* generation of intervening entities processes */                            
-    /* agent process */
-    strcpy (nFicErr + 6, "AG");
-    if ((pidAG = fork ()) < 0)  {                            
-        perror ("error on the fork operation for the agent");
-        exit (EXIT_FAILURE);
-    }
-    if (pidAG == 0) {
-        if (execl (AGENT, AGENT, nFic, num[1], nFicErr, NULL) < 0) {
-            perror ("error on the generation of the agent process");
-            exit (EXIT_FAILURE);
-        }
-    }
-    /* watcher processes */
-    strcpy (nFicErr + 6, "WT");
-    for (w = 0; w < NUMINGREDIENTS; w++) {           
-        if ((pidWT[w] = fork ()) < 0) {
-            perror ("error on the fork operation for the watcher");
-            exit (EXIT_FAILURE);
-        }
-        sprintf(num[0],"%d",w);
-        sprintf(nFicErr+8,"%02d",w); 
-        if (pidWT[w] == 0)
-            if (execl (WATCHER, WATCHER, num[0], nFic, num[1], nFicErr, NULL) < 0) { 
-                perror ("error on the generation of the watcher process");
-                exit (EXIT_FAILURE);
-            }
-    }
-
-    /* smoker processes */
-    strcpy (nFicErr + 6, "SM");
-    for (s = 0; s < NUMSMOKERS; s++) {           
-        if ((pidSM[s] = fork ()) < 0) {
-            perror ("error on the fork operation for the smoker");
-            exit (EXIT_FAILURE);
-        }
-        sprintf(num[0],"%d",s);
-        sprintf(nFicErr+8,"%02d",s); 
-        if (pidSM[s] == 0)
-            if (execl (SMOKER, SMOKER, num[0], nFic, num[1], nFicErr, NULL) < 0) { 
-                perror ("error on the generation of the watcher process");
-                exit (EXIT_FAILURE);
-            }
-    }
-
-
-    /* signaling start of operations */
-    if (semSignal (semgid) == -1) {
-        perror ("error on signaling start of operations");
-        exit (EXIT_FAILURE);
-    }
-
-    /* waiting for the termination of the intervening entities processes */
-    m = 0;
-    do {
-        info = wait (&status);
-        if (info == -1) { 
-            perror ("error on aiting for an intervening process");
-            exit (EXIT_FAILURE);
-        }
-        m += 1;
-    } while (m < 1 + NUMINGREDIENTS + NUMSMOKERS);
-
-    /* destruction of semaphore set and shared region */
-    if (semDestroy (semgid) == -1) {
-        perror ("error on destructing the semaphore set");
-        exit (EXIT_FAILURE);
-    }
-    if (shmemDettach (sh) == -1) { 
+    /* unmapping the shared region off the process address space */
+    if (shmemDettach (sh) == -1) {
         perror ("error on unmapping the shared region off the process address space");
-        exit (EXIT_FAILURE);
-    }
-    if (shmemDestroy (shmid) == -1) { 
-        perror ("error on destructing the shared region");
-        exit (EXIT_FAILURE);
+        return EXIT_FAILURE;;
     }
 
     return EXIT_SUCCESS;
 }
+
+/**
+ *  \brief normal distribution generator with zero mean and stddev deviation. 
+ *
+ *  Generates random number according to normal distribution.
+ * 
+ *  \param stddev controls standard deviation of distribution
+ */
+static double normalRand(double stddev)
+{
+   int i;
+
+   double r=0.0;
+   for (i=0;i<12;i++) {
+       r += random()/(RAND_MAX+1.0);
+   }
+   r -= 6.0;
+   return r*stddev;
+}
+
+/**
+ *  \brief smoker waits for the 2 ingredients he does not have
+ *
+ *  smoker updates state and waits for watcher notification to proceed to roll cigarette.
+ *  After the notification, smoker should update the inventory of ingredients.
+ *  It may also happen that watcher will notify smoker not because ingredients are available 
+ *  but because the factory is closing. In this case, state should be updated and  the function 
+ *  should return false;  
+ *
+ *  \param id smoker id, that is related to the ingredient that the smoker holds (see HAVE* constants in probConst.h)
+ *
+ *  \ret true if ingredients available; false if closing
+ */
+static bool waitForIngredients (int id)
+{
+    bool ret = true;
+
+    if (semDown (semgid, sh->mutex) == -1)  {                                                     /* enter critical region */
+        perror ("error on the up operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //change the state and save
+    sh->fSt.st.smokerStat[id] = WAITING_2ING;
+    saveState(nFic,&sh->fSt);
+
+
+    if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //waits for the notification from the watcher
+    if (semDown(semgid, sh->wait2Ings[id]) == -1) {                                                    
+        perror ("error on the up operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+    
+
+    if (semDown (semgid, sh->mutex) == -1)  {                                                     /* enter critical region */
+        perror ("error on the up operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //check if factory is closed
+    if (sh->fSt.closing){
+        sh->fSt.st.smokerStat[id] = CLOSING_S;
+        saveState(nFic,&sh->fSt);
+        ret = false;    
+    }
+
+    //take off used ingredients from inventory
+    switch (id){
+    case HAVETOBACCO:
+        sh->fSt.ingredients[MATCHES]--;
+        sh->fSt.ingredients[PAPER]--; 
+        break;
+    case HAVEMATCHES:
+        sh->fSt.ingredients[TOBACCO]--;
+        sh->fSt.ingredients[PAPER]--; 
+        break;
+    case HAVEPAPER:
+        sh->fSt.ingredients[MATCHES]--;
+        sh->fSt.ingredients[TOBACCO]--; 
+        break;
+    default:
+        break;
+
+    }
+
+    if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    return ret;
+}
+
+/**
+ *  \brief smoker rolls cigarette
+ *
+ *  The smoker updates state and takes some time to roll the cigarette.
+ *  after completing the cigarette, the smoker should notify the agent.
+ *
+ *  \param id smoker id
+ */
+static void rollingCigarette (int id)
+{
+    double rollingTime = 100.0 + normalRand(30.0);
+
+    if (semDown (semgid, sh->mutex) == -1)  {                                                     /* enter critical region */
+        perror ("error on the up operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //change smoker state to ROLLING and save
+    sh->fSt.st.smokerStat[id] = ROLLING;
+    saveState(nFic,&sh->fSt);
+
+
+    if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+    
+    /* TODO: insert your code here */    
+
+    //rolling the cigarrete
+    if (rollingTime > 0){
+        usleep(rollingTime);
+    }
+
+    //notify the agent that finished rolling cigarrete
+    if (semUp(semgid, sh->waitCigarette) == -1) {                                                        
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+}
+
+/**
+ *  \brief smoker smokes
+ *
+ *  The smoker updates state and the number of cigarretes already smoked and 
+ *  takes some time to smoke the cigarette
+ *
+ *  \param id smoker id
+ */
+static void smoke(int id)
+{
+
+    double smokingTime = 100.0 + normalRand(30.0);
+
+
+    if (semDown (semgid, sh->mutex) == -1)  {                                                     /* enter critical region */
+        perror ("error on the up operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //change smoker state to SMOKING and save
+    sh->fSt.st.smokerStat[id] = SMOKING;
+    saveState(nFic,&sh->fSt);
+
+    //update de nr of smoked cigaretts
+    sh->fSt.nCigarettes[id]+=1;
+
+    if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    /* TODO: insert your code here */
+
+    //wait to finish smoking
+    if (smokingTime > 0){
+        usleep(smokingTime);
+    }
+
+}
+
