@@ -144,9 +144,6 @@ static void prepareIngredients ()
     int ing1 = i % 3;
     int ing2 = (i+1) %3;
 
-    //update inventory
-    sh->fSt.ingredients[ing1]++;
-    sh->fSt.ingredients[ing2]++;
 
     if (semUp (semgid, sh->mutex) == -1) {                                                        /* leave critical region */
         perror ("error on the up operation for semaphore access (AG)");
@@ -154,6 +151,9 @@ static void prepareIngredients ()
     }
 
     /* TODO: insert your code here */
+    //update inventory
+    sh->fSt.ingredients[ing1]++;
+    sh->fSt.ingredients[ing2]++;
 
     //notify watcher through each ingredient's semaphore
     if (semUp(semgid, sh->ingredient[ing1]) == -1) {                                                        
@@ -195,7 +195,7 @@ static void waitForCigarette ()
 
     /* TODO: insert your code here */
     //the agent waits for smoker to finish rolling the cigarette
-    if (semDown (semgid, sh->waitCigarette) == -1)  {                                                     /* enter critical region */
+    if (semDown (semgid, sh->waitCigarette) == -1)  {                                                     
         perror ("error on the up operation for semaphore access (SM)");
         exit (EXIT_FAILURE);
     }
@@ -231,7 +231,16 @@ static void closeFactory ()
         exit (EXIT_FAILURE);
     }
 
-    //exits successful
-    exit(EXIT_SUCCESS);
+    if (semUp(semgid, sh->ingredient[1]) == -1) {                                                        
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
+    if (semUp(semgid, sh->ingredient[2]) == -1) {                                                        
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
 }
+
 
