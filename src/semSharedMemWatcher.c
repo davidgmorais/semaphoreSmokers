@@ -179,6 +179,15 @@ static bool waitForIngredient(int id)
         exit (EXIT_FAILURE);
     }
 
+    if(sh->fSt.closing){
+
+        if  (semUp(semgid,sh->wait2Ings[id])==-1){
+        	perror("error on the up operation for semaphore access (WT)");
+            exit(EXIT_FAILURE);
+
+        }
+    }
+
     return ret;
 
 }
@@ -204,6 +213,31 @@ static int updateReservations (int id)
     }
 
     /* TODO: insert your code here */
+    //update state to UPDATING
+    sh->fSt.st.smokerStat[id] = UPDATING;
+    saveState(nFic,&sh->fSt);
+
+    //resereves ingredients
+    sh->fSt.reserved[id]++;
+
+    //check if a smoker can start rolling
+    if (sh->fSt.reserved[TOBACCO]>0 && sh->fSt.reserved[PAPER]>0) {
+        sh->fSt.reserved[TOBACCO]--;
+        sh->fSt.reserved[PAPER]--;
+        ret = HAVEMATCHES;
+    }
+    
+    if (sh->fSt.reserved[TOBACCO]>0 && sh->fSt.reserved[MATCHES]>0) {
+        sh->fSt.reserved[TOBACCO]--;
+        sh->fSt.reserved[MATCHES]--;
+        ret = HAVEPAPER;
+    }
+
+    if (sh->fSt.reserved[MATCHES]>0 && sh->fSt.reserved[PAPER]>0) {
+        sh->fSt.reserved[MATCHES]--;
+        sh->fSt.reserved[PAPER]--;
+        ret = HAVETOBACCO;
+    }
     
     if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
         perror ("error on the down operation for semaphore access (WT)");
@@ -230,6 +264,9 @@ static void informSmoker (int id, int smokerReady)
     }
 
     /* TODO: insert your code here */
+    //updates state
+    sh->fSt.st.smokerStat[id] = INFORMING;
+    saveState(nFic,&sh->fSt);
 
     if (semUp (semgid, sh->mutex) == -1) {                                                         /* exit critical region */
         perror ("error on the down operation for semaphore access (WT)");
@@ -237,4 +274,11 @@ static void informSmoker (int id, int smokerReady)
     }
 
     /* TODO: insert your code here */
+    //watcher informs smockers
+    if (semUp(semgid, sh->wait2Ings[smokerReady]) == -1) {                                                    
+        perror ("error on the down operation for semaphore access (SM)");
+        exit (EXIT_FAILURE);
+    }
+
 }
+
