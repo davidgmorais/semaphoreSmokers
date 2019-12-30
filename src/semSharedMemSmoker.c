@@ -302,3 +302,4 @@ static void smoke(int id)
 
 }
 
+
